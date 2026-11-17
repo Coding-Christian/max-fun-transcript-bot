@@ -9,7 +9,7 @@ export const SEARCH_COMMAND = {
   contexts: [0, 1, 2],
   options: [
     { name: 'query', description: 'Text to search for (up to 100 characters).', type: 3, required: true, min_length: 1, max_length: 100 },
-    ...TRANSCRIPT_COMMAND.options.map(option => ({ ...option, required: false })),
+    ...TRANSCRIPT_COMMAND.options.filter(option => option.name !== 'reload').map(option => ({ ...option, required: false })),
   ],
 };
 

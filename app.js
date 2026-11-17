@@ -1,15 +1,13 @@
 import 'dotenv/config';
 import express from 'express';
 import {
-  ButtonStyleTypes,
   InteractionResponseFlags,
   InteractionResponseType,
   InteractionType,
   MessageComponentTypes,
   verifyKeyMiddleware,
 } from 'discord-interactions';
-import { getRandomEmoji, DiscordRequest } from './utils.js';
-import { getShuffledOptions, getResult } from './game.js';
+import { getRandomEmoji } from './utils.js';
 import { validateTranscriptOptions } from './transcript-command.js';
 import { respondWithTranscript } from './transcript-response.js';
 import { validateSearchOptions } from './search-command.js';
@@ -19,16 +17,14 @@ import { respondWithSearch } from './search-response.js';
 const app = express();
 // Get port, or default to 3000
 const PORT = process.env.PORT || 3000;
-// To keep track of our active games
-const activeGames = {};
 
 /**
  * Interactions endpoint URL where Discord will send HTTP requests
  * Parse request body and verifies incoming requests using discord-interactions package
  */
 app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
-  // Interaction id, type and data
-  const { id, type, data } = req.body;
+  // Interaction type and data
+  const { type, data } = req.body;
 
   /**
    * Handle verification requests
@@ -47,7 +43,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
     if (name === 'transcript' || name === 'search') {
       const options = Object.fromEntries((data.options || []).map(({ name, value }) => [name, value]));
       try {
-        if (name === 'transcript') validateTranscriptOptions(options.show, options.episode);
+        if (name === 'transcript') validateTranscriptOptions(options.show, options.episode, options.reload);
         else validateSearchOptions(options);
       } catch (error) {
         return res.send({

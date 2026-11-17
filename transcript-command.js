@@ -23,12 +23,19 @@ export const TRANSCRIPT_COMMAND = {
       required: true,
       min_value: 2,
     },
+    {
+      name: 'reload',
+      description: 'Download a fresh copy and replace the cached transcript.',
+      type: 5,
+      required: false,
+    },
   ],
 };
 
-export function validateTranscriptOptions(show, episode) {
+export function validateTranscriptOptions(show, episode, reload = false) {
   if (!Object.hasOwn(SHOWS, show)) throw new Error('Please select a supported show.');
   if (!Number.isSafeInteger(episode) || episode <= 1) {
     throw new Error('Episode must be an integer greater than 1.');
   }
+  if (typeof reload !== 'boolean') throw new Error('Reload must be true or false.');
 }

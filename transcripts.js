@@ -1,5 +1,5 @@
 import { load } from 'cheerio';
-import { mkdir, readFile, readdir, stat, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, rename, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +24,11 @@ function titleEpisode(title) {
   return title.match(/\bMBMBaM\s*(?:Ep(?:isode)?\.?\s*)?#?\s*0*(\d+)\b/i)?.[1];
 }
 
+function urlEpisode(url) {
+  const slug = new URL(url).pathname.split('/').filter(Boolean).at(-1);
+  return slug?.match(/(?:^|-)mbmbam-(?:ep(?:isode)?-?)?0*(\d+)(?:-|$)/i)?.[1];
+}
+
 function isPDF(buffer) {
   return buffer.subarray(0, 5).toString() === '%PDF-';
 }
@@ -33,21 +38,20 @@ export function createTranscriptStore({
   cacheDir = process.env.TRANSCRIPT_DIR || DEFAULT_CACHE,
   fetchImpl = globalThis.fetch,
   extractText = extractPDFText,
+  logger = console,
 } = {}) {
   const pending = new Map();
   const textPending = new Map();
 
-  function ensureText(show, episode, pdf, replace = false) {
+  function ensureText(show, episode, pdf) {
     const textPath = path.resolve(cacheDir, show, `${episode}.txt`);
     if (!textPending.has(textPath)) {
       const work = async () => {
-        if (!replace) {
-          try {
-            const text = await readFile(textPath, 'utf8');
-            if (text.trim()) return text;
-          } catch (error) {
-            if (error.code !== 'ENOENT') throw error;
-          }
+        try {
+          const text = await readFile(textPath, 'utf8');
+          if (text.trim()) return text;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
         }
         const text = await extractText(pdf ?? await readFile(path.resolve(cacheDir, show, `${episode}.pdf`)));
         if (!text.trim()) throw new Error('The PDF has no extractable text.');
@@ -113,20 +117,22 @@ export function createTranscriptStore({
     return buffer;
   }
 
-  async function lookup(show, episode) {
+  async function lookup(show, episode, reload) {
     const directory = path.resolve(cacheDir, show);
     const pdfPath = path.join(directory, `${episode}.pdf`);
     const metadataPath = path.join(directory, `${episode}.json`);
-    try {
-      const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
-      const pdf = await readFile(pdfPath);
-      if (metadata?.show === SHOWS[show].name && metadata.episode === episode &&
-          typeof metadata.title === 'string' && typeof metadata.description === 'string' && isPDF(pdf)) {
-        return { ...metadata, pdf, filename: `${show}-${episode}.pdf` };
+    if (!reload) {
+      try {
+        const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+        const pdf = await readFile(pdfPath);
+        if (metadata?.show === SHOWS[show].name && metadata.episode === episode &&
+            typeof metadata.title === 'string' && typeof metadata.description === 'string' && isPDF(pdf)) {
+          return { ...metadata, pdf, filename: `${show}-${episode}.pdf` };
+        }
+      } catch (error) {
+        // Missing or corrupt cache entries are downloaded again; filesystem errors surface.
+        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
       }
-    } catch (error) {
-      // Missing or corrupt cache entries are downloaded again; filesystem errors surface.
-      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
 
     const searchURL = new URL('/transcripts/', ORIGIN);
@@ -156,10 +162,18 @@ export function createTranscriptStore({
           const page = load(await request(url));
           const heading = clean(page('#transcript-title h1').text() || page('h1').first().text());
           const explicitNumber = clean(page('#from-episode-number a').first().text());
-          const number = explicitNumber || titleEpisode(heading);
+          const headingNumber = titleEpisode(heading);
+          const urlNumber = urlEpisode(url);
+          // Do not let a copied episode-number field override an agreeing title/URL.
+          if (headingNumber && urlNumber && Number(headingNumber) !== Number(urlNumber)) continue;
+          const agrees = headingNumber && urlNumber && Number(headingNumber) === Number(urlNumber);
+          const number = agrees ? headingNumber : explicitNumber || headingNumber;
           if (!/^\d+$/.test(number || '') || Number(number) !== episode) continue;
           const href = page('a.btn-transcript-download[href]').first().attr('href');
           if (!href) continue;
+          if (agrees && explicitNumber && Number(explicitNumber) !== episode) {
+            logger.warn(`Transcript episode-number conflict: ${url} identifies episode ${episode} in its URL and title, but from-episode-number displays ${explicitNumber}. Using episode ${episode}.`);
+          }
           metadata = {
             show: SHOWS[show].name,
             episode,
@@ -176,28 +190,41 @@ export function createTranscriptStore({
       throw new TranscriptError(`No PDF transcript was found for ${SHOWS[show].name}, episode ${episode}. It may not have been published yet.`);
     }
     const pdf = await request(metadata.pdfUrl, true);
+    // Finish extraction before replacing any cached version, including on reload.
+    await textPending.get(path.resolve(directory, `${episode}.txt`))?.catch(() => {});
+    const text = await extractText(pdf);
+    if (!text.trim()) throw new Error('The PDF has no extractable text.');
     await mkdir(directory, { recursive: true });
-    // Readers only see complete files, and metadata is committed last.
+    // Stage complete files first; a fetch/download/extraction failure keeps the old cache.
     const suffix = `.${randomUUID()}.tmp`;
-    await writeFile(pdfPath + suffix, pdf);
-    await rename(pdfPath + suffix, pdfPath);
-    await writeFile(metadataPath + suffix, JSON.stringify(metadata, null, 2));
-    await rename(metadataPath + suffix, metadataPath);
-    await ensureText(show, episode, pdf, true);
+    const files = [[pdfPath, pdf], [path.join(directory, `${episode}.txt`), text], [metadataPath, JSON.stringify(metadata, null, 2)]];
+    try {
+      for (const [file, contents] of files) await writeFile(file + suffix, contents);
+      for (const [file] of files) await rename(file + suffix, file);
+    } finally {
+      await Promise.all(files.map(([file]) => rm(file + suffix, { force: true })));
+    }
     return { ...metadata, pdf, filename: `${show}-${episode}.pdf` };
   }
 
   return {
-    async getTranscript(show, episode) {
-      validateTranscriptOptions(show, episode);
+    async getTranscript(show, episode, reload = false) {
+      validateTranscriptOptions(show, episode, reload);
       const key = `${show}/${episode}`;
-      if (!pending.has(key)) {
-        pending.set(key, lookup(show, episode).then(async transcript => {
-          await ensureText(show, episode, transcript.pdf);
-          return transcript;
-        }).finally(() => pending.delete(key)));
-      }
-      return pending.get(key);
+      const existing = pending.get(key);
+      if (existing && (!reload || existing.reload)) return existing.promise;
+      const record = { reload };
+      record.promise = (async () => {
+        // A reload arriving during a normal fetch must still fetch a fresh copy.
+        if (existing) await existing.promise.catch(() => {});
+        const transcript = await lookup(show, episode, reload);
+        await ensureText(show, episode, transcript.pdf);
+        return transcript;
+      })().finally(() => {
+        if (pending.get(key) === record) pending.delete(key);
+      });
+      pending.set(key, record);
+      return record.promise;
     },
     async searchTranscripts(options) {
       validateSearchOptions(options);

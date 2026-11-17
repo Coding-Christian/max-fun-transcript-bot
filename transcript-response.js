@@ -31,7 +31,7 @@ export async function respondWithTranscript(interaction, {
 } = {}) {
   try {
     const options = Object.fromEntries(interaction.data.options.map(({ name, value }) => [name, value]));
-    const transcript = await store.getTranscript(options.show, options.episode);
+    const transcript = await store.getTranscript(options.show, options.episode, options.reload);
     if (transcript.pdf.length > (interaction.attachment_size_limit || 10 * 1024 * 1024)) {
       throw new TranscriptError(`This PDF exceeds Discord's attachment limit. Download it from ${transcript.pdfUrl}`);
     }
@@ -44,7 +44,7 @@ export async function respondWithTranscript(interaction, {
       }],
     }, transcript);
   } catch (error) {
-    logger.error('Transcript request failed:', error.name);
+    logger.error('Transcript request failed:', error.message);
     const content = error instanceof TranscriptError ? error.message :
       'Unable to retrieve or send the transcript right now. Please try again later.';
     try {

@@ -1,4 +1,4 @@
-# Getting Started app for Discord
+# Podcast Transcript Bot for Discord
 
 ## Podcast transcripts
 
@@ -9,12 +9,21 @@ Restart the bot with `npm start` after updating the code.
 Example: `/transcript show:My Brother, My Brother and Me episode:838`
 
 Both options are required; `episode` must be an integer greater than 1.
+The optional boolean `reload` defaults to false. Set `reload:true` to search
+Maximum Fun again and download a fresh copy, even when the episode is cached:
+`/transcript show:My Brother, My Brother and Me episode:835 reload:true`.
+A successful refresh replaces the PDF, episode metadata, and searchable text.
+The previous files remain available if the search, download, or extraction fails.
 The bot checks its local cache first, then searches Maximum Fun's transcript
 index for the requested show and episode. It follows the result's actual page
 URL, verifies the episode number, and downloads the PDF from the transcript
 download button. The response includes the show, episode number, title,
 description, and attached PDF. Missing transcripts and download errors produce
 a message in Discord.
+If the episode number in the transcript page URL agrees with its heading, that
+number takes precedence over a conflicting `from-episode-number` field. The
+bot logs a warning on the server with the conflicting values and returns the
+transcript. Pages whose URL and heading disagree are skipped.
 
 PDFs and episode metadata are stored in
 `transcripts/my-brother-my-brother-and-me/<episode>.pdf` and `<episode>.json`.
@@ -58,16 +67,11 @@ When there are no gaps, the bot reports no results in the searched library;
 it does not infer whether newer episodes have been released beyond the highest
 downloaded episode. PDF extraction failures are reported as incomplete searches.
 
-This project contains a basic rock-paper-scissors-style Discord app written in JavaScript, built for the [getting started guide](https://discord.com/developers/docs/getting-started).
-
-![Demo of app](https://github.com/discord/discord-example-app/raw/main/assets/getting-started-demo.gif?raw=true)
-
 ## Project structure
 Below is a basic overview of the project structure:
 
 ```
 ├── examples    -> short, feature-specific sample apps
-│   ├── app.js  -> finished app.js code
 │   ├── button.js
 │   ├── command.js
 │   ├── modal.js
@@ -75,7 +79,12 @@ Below is a basic overview of the project structure:
 ├── .env.sample -> sample .env file
 ├── app.js      -> main entrypoint for app
 ├── commands.js -> slash command payloads + helpers
-├── game.js     -> logic specific to RPS
+├── transcript-command.js -> /transcript options and validation
+├── transcripts.js -> transcript downloads, caching, and local search
+├── transcript-text.js -> PDF extraction and text matching
+├── transcript-response.js -> transcript responses and attachments
+├── search-command.js -> /search options and validation
+├── search-response.js -> excerpts and missing-episode responses
 ├── utils.js    -> utility functions and enums
 ├── package.json
 ├── README.md
@@ -113,7 +122,7 @@ Fetching credentials is covered in detail in the [getting started guide](https:/
 
 ### Install slash commands
 
-The commands for the example app are set up in `commands.js`. All of the commands in the `ALL_COMMANDS` array at the bottom of `commands.js` will be installed when you run the `register` command configured in `package.json`:
+The registered commands are `/test`, `/transcript`, and `/search`. They are set up in `commands.js`. All commands in its `ALL_COMMANDS` array will be installed when you run:
 
 ```
 npm run register
@@ -128,8 +137,6 @@ node app.js
 ```
 
 > ⚙️ A package [like `nodemon`](https://github.com/remy/nodemon), which watches for local changes and restarts your app, may be helpful while locally developing.
-
-If you aren't following the [getting started guide](https://discord.com/developers/docs/getting-started), you can move the contents of `examples/app.js` (the finished `app.js` file) to the top-level `app.js`.
 
 ### Set up interactivity
 
