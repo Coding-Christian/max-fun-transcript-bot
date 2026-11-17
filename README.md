@@ -1,5 +1,30 @@
 # Getting Started app for Discord
 
+## Podcast transcripts
+
+Run this bot with Node.js 18.4 or newer (`nvm use` selects Node 20). Install dependencies with `npm install`,
+then run `npm run register` to add `/transcript` to your Discord application.
+Restart the bot with `npm start` after updating the code.
+
+Example: `/transcript show:My Brother, My Brother and Me episode:838`
+
+Both options are required; `episode` must be an integer greater than 1.
+The bot checks its local cache first, then searches Maximum Fun's transcript
+index for the requested show and episode. It follows the result's actual page
+URL, verifies the episode number, and downloads the PDF from the transcript
+download button. The response includes the show, episode number, title,
+description, and attached PDF. Missing transcripts and download errors produce
+a message in Discord.
+
+PDFs and episode metadata are stored in
+`transcripts/my-brother-my-brother-and-me/<episode>.pdf` and `<episode>.json`.
+Set `TRANSCRIPT_DIR` to use a different cache directory. Keep this directory on
+persistent storage when deploying so cached transcripts survive restarts.
+The bot needs permission to send messages, embed links, and attach files.
+PDF downloads are capped at 25 MiB; files exceeding the interaction's Discord
+attachment limit are returned as a download link. Run `npm test` for offline
+lookup, cache, validation, and response tests.
+
 This project contains a basic rock-paper-scissors-style Discord app written in JavaScript, built for the [getting started guide](https://discord.com/developers/docs/getting-started).
 
 ![Demo of app](https://github.com/discord/discord-example-app/raw/main/assets/getting-started-demo.gif?raw=true)

@@ -10,6 +10,8 @@ import {
 } from 'discord-interactions';
 import { getRandomEmoji, DiscordRequest } from './utils.js';
 import { getShuffledOptions, getResult } from './game.js';
+import { validateTranscriptOptions } from './transcript-command.js';
+import { respondWithTranscript } from './transcript-response.js';
 
 // Create an express app
 const app = express();
@@ -39,6 +41,21 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
    */
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
+
+    if (name === 'transcript') {
+      const options = Object.fromEntries((data.options || []).map(({ name, value }) => [name, value]));
+      try {
+        validateTranscriptOptions(options.show, options.episode);
+      } catch (error) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: error.message, flags: 64, allowed_mentions: { parse: [] } },
+        });
+      }
+      res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
+      void respondWithTranscript(req.body);
+      return;
+    }
 
     // "test" command
     if (name === 'test') {

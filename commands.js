@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { getRPSChoices } from './game.js';
 import { capitalize, InstallGlobalCommands } from './utils.js';
+import { TRANSCRIPT_COMMAND } from './transcript-command.js';
 
 // Get the game choices from game.js
 function createCommandChoices() {
@@ -44,6 +45,12 @@ const CHALLENGE_COMMAND = {
   contexts: [0, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, CHALLENGE_COMMAND];
+const ALL_COMMANDS = [TEST_COMMAND, CHALLENGE_COMMAND, TRANSCRIPT_COMMAND];
 
-InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);
+try {
+  const registered = await InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);
+  console.log(`Registered global commands: ${registered.map(command => `/${command.name}`).join(', ')}`);
+} catch (error) {
+  console.error(`Command registration failed: ${error.message}`);
+  process.exitCode = 1;
+}

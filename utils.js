@@ -25,15 +25,18 @@ export async function DiscordRequest(endpoint, options) {
 }
 
 export async function InstallGlobalCommands(appId, commands) {
+  if (typeof globalThis.fetch !== 'function') {
+    throw new Error('Command registration requires Node.js 18.4 or newer. Run `nvm use` (or select Node.js 20), then retry `npm run register`.');
+  }
+  if (!appId || !process.env.DISCORD_TOKEN) {
+    throw new Error('Set APP_ID and DISCORD_TOKEN in .env before registering commands.');
+  }
   // API endpoint to overwrite global commands
   const endpoint = `applications/${appId}/commands`;
 
-  try {
-    // This is calling the bulk overwrite endpoint: https://discord.com/developers/docs/interactions/application-commands#bulk-overwrite-global-application-commands
-    await DiscordRequest(endpoint, { method: 'PUT', body: commands });
-  } catch (err) {
-    console.error(err);
-  }
+  // Discord returns the registered commands so callers can confirm success.
+  const response = await DiscordRequest(endpoint, { method: 'PUT', body: commands });
+  return response.json();
 }
 
 // Simple method that returns a random emoji from list
