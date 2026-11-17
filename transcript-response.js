@@ -4,12 +4,14 @@ export async function editTranscriptResponse(interaction, payload, file, fetchIm
   let body;
   const headers = {};
   if (file) {
+    const files = Array.isArray(file) ? file : [file];
     body = new FormData();
     body.append('payload_json', JSON.stringify({
       ...payload,
-      attachments: [{ id: 0, filename: file.filename }],
+      attachments: files.map((file, id) => ({ id, filename: file.filename })),
     }));
-    body.append('files[0]', new Blob([file.pdf], { type: 'application/pdf' }), file.filename);
+    files.forEach((file, id) => body.append(`files[${id}]`,
+      new Blob([file.pdf], { type: file.contentType || 'application/pdf' }), file.filename));
   } else {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(payload);
@@ -36,9 +38,8 @@ export async function respondWithTranscript(interaction, {
     await edit(interaction, {
       allowed_mentions: { parse: [] },
       embeds: [{
-        title: `${transcript.show} — Episode ${transcript.episode}`.slice(0, 256),
+        title: transcript.title.slice(0, 256),
         url: transcript.sourceUrl,
-        fields: [{ name: 'Title', value: transcript.title.slice(0, 1024) }],
         description: transcript.description.slice(0, 4096),
       }],
     }, transcript);

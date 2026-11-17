@@ -20,7 +20,7 @@ async function setup(t, pages) {
   const cacheDir = await mkdtemp(path.join(tmpdir(), 'transcript-test-'));
   t.after(() => rm(cacheDir, { recursive: true, force: true }));
   const calls = [];
-  const store = createTranscriptStore({ cacheDir, fetchImpl: async (url) => {
+  const store = createTranscriptStore({ cacheDir, extractText: async () => 'Test transcript text\n', fetchImpl: async (url) => {
     calls.push(url);
     assert.ok(pages.has(url), `Unexpected request: ${url}`);
     const data = pages.get(url);
@@ -56,7 +56,7 @@ test('command requires a supported show and an integer above 1', () => {
 test('follows unusual URLs, extracts metadata, and serves subsequent requests entirely from cache', async t => {
   const { store, calls, cacheDir } = await setup(t, results(710));
   const first = await store.getTranscript(show, 710);
-  assert.equal(first.title, 'A title & more');
+  assert.equal(first.title, 'MBMBaM 710: A title & more');
   assert.equal(first.description, 'An episode description.');
   assert.equal(first.show, 'My Brother, My Brother and Me');
   assert.deepEqual(first.pdf, pdf);
@@ -104,7 +104,7 @@ test('retries a short episode number with leading zeros for older transcripts', 
   pages.set(`${base}/transcripts/?_podcast=${show}&_search=22`, 'No results');
   pages.set(`${base}/transcripts/${show}/unusual-page-name/`, page('022'));
   const { store } = await setup(t, pages);
-  assert.equal((await store.getTranscript(show, 22)).title, 'A title & more');
+  assert.equal((await store.getTranscript(show, 22)).title, 'MBMBaM 022: A title & more');
 });
 
 test('rejects HTML masquerading as a PDF and retries failed lookups', async t => {
@@ -157,7 +157,7 @@ test('returns metadata and PDF to Discord', async () => {
     } },
     edit: async (...args) => edits.push(args),
   });
-  assert.equal(edits[0][1].embeds[0].title, 'Show — Episode 22');
+  assert.equal(edits[0][1].embeds[0].title, 'Title');
   assert.equal(edits[0][1].embeds[0].description, 'Description');
   assert.deepEqual(edits[0][2].pdf, pdf);
 });

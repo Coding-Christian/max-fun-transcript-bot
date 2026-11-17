@@ -12,6 +12,8 @@ import { getRandomEmoji, DiscordRequest } from './utils.js';
 import { getShuffledOptions, getResult } from './game.js';
 import { validateTranscriptOptions } from './transcript-command.js';
 import { respondWithTranscript } from './transcript-response.js';
+import { validateSearchOptions } from './search-command.js';
+import { respondWithSearch } from './search-response.js';
 
 // Create an express app
 const app = express();
@@ -42,10 +44,11 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
 
-    if (name === 'transcript') {
+    if (name === 'transcript' || name === 'search') {
       const options = Object.fromEntries((data.options || []).map(({ name, value }) => [name, value]));
       try {
-        validateTranscriptOptions(options.show, options.episode);
+        if (name === 'transcript') validateTranscriptOptions(options.show, options.episode);
+        else validateSearchOptions(options);
       } catch (error) {
         return res.send({
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -53,7 +56,8 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         });
       }
       res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-      void respondWithTranscript(req.body);
+      if (name === 'transcript') void respondWithTranscript(req.body);
+      else void respondWithSearch(req.body);
       return;
     }
 
