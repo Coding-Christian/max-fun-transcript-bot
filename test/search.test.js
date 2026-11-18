@@ -133,18 +133,18 @@ test('ignores orphan files and malformed metadata when determining downloads and
   await writeFile(path.join(directory, '8.json.tmp'), '{}');
   const result = await store.searchTranscripts({ query: 'birds' });
   assert.equal(result.searched, 2);
-  assert.deepEqual(result.missing[0].ranges, [[2, 2], [4, 7]]);
+  assert.deepEqual(result.missing[0].ranges, [[1, 2], [4, 7]]);
   assert.equal(result.missing[0].highest, 8);
 });
 
 test('missing episode ranges are bounded, respect filters and handle large episode numbers without enumeration', () => {
   const entries = [2, 4, 8].map(episode => ({ slug, episode }));
-  assert.deepEqual(missingEpisodes(entries)[0].ranges, [[3, 3], [5, 7]]);
+  assert.deepEqual(missingEpisodes(entries)[0].ranges, [[1, 1], [3, 3], [5, 7]]);
   assert.deepEqual(missingEpisodes(entries, { episode: 6 })[0].ranges, [[6, 6]]);
   assert.deepEqual(missingEpisodes(entries, { episode: 4 })[0].ranges, []);
   assert.deepEqual(missingEpisodes(entries, { episode: 900 })[0].ranges, []);
-  assert.deepEqual(missingEpisodes([{ slug, episode: Number.MAX_SAFE_INTEGER }])[0].ranges, [[2, Number.MAX_SAFE_INTEGER - 1]]);
-  assert.deepEqual(missingEpisodes([{ slug, episode: 2 }, { slug, episode: 3 }])[0].ranges, []);
+  assert.deepEqual(missingEpisodes([{ slug, episode: Number.MAX_SAFE_INTEGER }])[0].ranges, [[1, Number.MAX_SAFE_INTEGER - 1]]);
+  assert.deepEqual(missingEpisodes([{ slug, episode: 1 }, { slug, episode: 2 }, { slug, episode: 3 }])[0].ranges, []);
 });
 
 test('no matches distinguish empty libraries, gaps and complete bounded libraries', async t => {
@@ -155,7 +155,7 @@ test('no matches distinguish empty libraries, gaps and complete bounded librarie
   const message = noResultsMessage({ missing });
   assert.match(message, /3, 5–7/);
   assert.doesNotMatch(message, /8–/);
-  assert.match(noResultsMessage({ missing: missingEpisodes([2, 3, 4].map(episode => ({slug, episode}))) }), /All episodes from 2 through 4 are downloaded and searched; no matches found/);
+  assert.match(noResultsMessage({ missing: missingEpisodes([1, 2, 3, 4].map(episode => ({slug, episode}))) }), /All episodes from 1 through 4 are downloaded and searched; no matches found/);
 });
 
 test('failed extraction is an incomplete search, and a later search can retry', async t => {

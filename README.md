@@ -3,23 +3,46 @@
 ## Podcast transcripts
 
 Run this bot with Node.js 18.4 or newer (`nvm use` selects Node 20). Install dependencies with `npm install`,
-then run `npm run register` to add `/transcript` and `/search` to your Discord application.
+then run `npm run register` to add `/transcript`, `/search`, and `/list` to your Discord application.
 Restart the bot with `npm start` after updating the code.
 
-Example: `/transcript show:My Brother, My Brother and Me episode:838`
+Example: `/transcript show:My Brother, My Brother and Me episodes:1,5-10`
 
-Both options are required; `episode` must be an integer greater than 1.
+Both `show` and `episodes` are required. `episodes` is a string of positive
+episode numbers and inclusive ranges, using only commas and hyphens as
+separators. Spaces are removed before validation: `1, 5 - 10` is accepted.
+Empty entries, descending ranges, zero, decimal numbers, and other separators
+are rejected with a malformed-option response before any download begins.
+Overlapping ranges and duplicates are merged and processed in ascending order.
+
+When the selection resolves to **one episode** (for example, `episodes:11`),
+the bot fetches or reuses that episode and responds with its title, description,
+and PDF attachment. There is no bulk announcement or pause. A single-episode
+range such as `11-11` or duplicate selection such as `11,11` works the same way.
+PDFs exceeding Discord's attachment limit are returned as download links.
+
+For **multiple episodes**, the bot announces that the bulk download has commenced, then edits the same
+message when complete with success/failure counts and all failed episode
+numbers (consecutive failures are shown as ranges). If the failure list is too
+long for a Discord message, it is attached as a plain-text report. Transcript
+PDFs are saved locally and are not attached to bulk responses. The bot waits
+one second between episodes, including after a failure, and continues with the
+remaining episodes when an individual request fails.
+
+For jobs exceeding Discord's interaction-token lifetime, the bot attempts to
+edit that same message using its bot token and channel permissions. Keep the
+bot running until the batch completes; unfinished batches do not survive a restart.
+
 The optional boolean `reload` defaults to false. Set `reload:true` to search
 Maximum Fun again and download a fresh copy, even when the episode is cached:
-`/transcript show:My Brother, My Brother and Me episode:835 reload:true`.
+`/transcript show:My Brother, My Brother and Me episodes:835-838 reload:true`.
 A successful refresh replaces the PDF, episode metadata, and searchable text.
 The previous files remain available if the search, download, or extraction fails.
-The bot checks its local cache first, then searches Maximum Fun's transcript
+For each episode the bot checks its local cache first, then searches Maximum Fun's transcript
 index for the requested show and episode. It follows the result's actual page
 URL, verifies the episode number, and downloads the PDF from the transcript
-download button. The response includes the show, episode number, title,
-description, and attached PDF. Missing transcripts and download errors produce
-a message in Discord.
+download button. Missing transcripts and download errors are included in the
+completion summary and logged with episode numbers and error messages.
 If the episode number in the transcript page URL agrees with its heading, that
 number takes precedence over a conflicting `from-episode-number` field. The
 bot logs a warning on the server with the conflicting values and returns the
@@ -34,17 +57,29 @@ simultaneous requests reuse the same text file.
 Set `TRANSCRIPT_DIR` to use a different cache directory. Keep this directory on
 persistent storage when deploying so cached transcripts survive restarts.
 The bot needs permission to send messages, embed links, and attach files.
-PDF downloads are capped at 25 MiB; files exceeding the interaction's Discord
-attachment limit are returned as a download link. Run `npm test` for offline
+PDF downloads are capped at 25 MiB. Single-episode `/transcript` requests and `/search` return links for PDFs exceeding
+Discord's attachment limit. Run `npm test` for offline
 lookup, cache, validation, and response tests.
+
+## Listing downloaded transcripts
+
+Example: `/list show:My Brother, My Brother and Me`
+
+`show` is required and uses the same choices as `/transcript`. The response
+lists downloaded episode numbers in ascending order with a total count.
+Only episodes with valid cached metadata and a nonempty PDF are included;
+text extraction is not required. Listing does not download or parse files.
+An empty library returns a message inviting you to download episodes. Lists
+too long for a Discord message are attached as `downloaded-episodes.txt`.
 
 ## Searching downloaded transcripts
 
 Example: `/search query:feed the birds show:My Brother, My Brother and Me episode:838`
 
 Only `query` is required (1–100 characters containing searchable text).
-`show` and `episode` are optional and use the same choices and episode minimum
-as `/transcript`. Omit them to search all downloaded episodes. Search checks
+`show` and `episode` are optional. `show` uses the same choices as `/transcript`;
+`episode` remains a single integer greater than 1. Omit them to search all
+downloaded episodes, including episode 1. Search checks
 the transcript text, show name, episode title, and episode number; it does not
 download episodes or search the web.
 
@@ -58,7 +93,7 @@ with excerpts replacing the episode descriptions and the matching PDFs attached.
 Narrow the query or use the filters when more than five episodes match. PDFs
 exceeding attachment limits are linked instead.
 
-If nothing matches, the response lists missing episodes from 2 to just below
+If nothing matches, the response lists missing episodes from 1 to just below
 the highest downloaded episode **for each selected show**, respecting the
 episode filter. Consecutive missing episodes are displayed as inclusive ranges
 (for example, `3–7` means episodes 3, 4, 5, 6, and 7). A long list is attached
@@ -85,6 +120,8 @@ Below is a basic overview of the project structure:
 ├── transcript-response.js -> transcript responses and attachments
 ├── search-command.js -> /search options and validation
 ├── search-response.js -> excerpts and missing-episode responses
+├── list-command.js -> /list options and validation
+├── list-response.js -> downloaded episode lists
 ├── utils.js    -> utility functions and enums
 ├── package.json
 ├── README.md
@@ -122,7 +159,7 @@ Fetching credentials is covered in detail in the [getting started guide](https:/
 
 ### Install slash commands
 
-The registered commands are `/test`, `/transcript`, and `/search`. They are set up in `commands.js`. All commands in its `ALL_COMMANDS` array will be installed when you run:
+The registered commands are `/test`, `/transcript`, `/search`, and `/list`. They are set up in `commands.js`. All commands in its `ALL_COMMANDS` array will be installed when you run:
 
 ```
 npm run register

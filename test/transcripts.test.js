@@ -4,8 +4,8 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTranscriptStore, TranscriptError } from '../transcripts.js';
-import { TRANSCRIPT_COMMAND, validateTranscriptOptions } from '../transcript-command.js';
-import { editTranscriptResponse, respondWithTranscript } from '../transcript-response.js';
+import { TRANSCRIPT_COMMAND, validateTranscriptOptions, parseEpisodes, validateBulkTranscriptOptions } from '../transcript-command.js';
+import { editTranscriptResponse, respondWithTranscript, completeTranscriptResponse } from '../transcript-response.js';
 
 const show = 'my-brother-my-brother-and-me';
 const base = 'https://maximumfun.org';
@@ -39,17 +39,18 @@ function results(episode, urls = ['unusual-page-name']) {
   ]);
 }
 
-test('command requires a supported show and an integer above 1', () => {
+test('command requires a supported show and episode list with optional reload', () => {
   assert.equal(TRANSCRIPT_COMMAND.name, 'transcript');
-  assert.deepEqual(TRANSCRIPT_COMMAND.options.map(o => [o.name, o.required]), [['show', true], ['episode', true], ['reload', false]]);
+  assert.deepEqual(TRANSCRIPT_COMMAND.options.map(o => [o.name, o.required]), [['show', true], ['episodes', true], ['reload', false]]);
   assert.equal(TRANSCRIPT_COMMAND.options[0].choices.length, 1);
-  assert.equal(TRANSCRIPT_COMMAND.options[1].min_value, 2);
+  assert.equal(TRANSCRIPT_COMMAND.options[1].type, 3);
+  validateTranscriptOptions(show, 1);
   validateTranscriptOptions(show, 2);
   assert.equal(TRANSCRIPT_COMMAND.options[2].type, 5);
   validateTranscriptOptions(show, 2, true);
   validateTranscriptOptions(show, 2, false);
   for (const reload of ['true', 1, null]) assert.throws(() => validateTranscriptOptions(show, 2, reload));
-  for (const episode of [1, 0, -1, 2.1, '838', undefined, NaN]) {
+  for (const episode of [0, -1, 2.1, '838', undefined, NaN]) {
     assert.throws(() => validateTranscriptOptions(show, episode));
   }
   for (const invalid of ['../escape', 'toString', '__proto__']) {
@@ -69,6 +70,14 @@ test('follows unusual URLs, extracts metadata, and serves subsequent requests en
   assert.deepEqual(second, first);
   assert.equal(calls.length, 3);
   assert.deepEqual(await readFile(path.join(cacheDir, show, '710.pdf')), pdf);
+});
+
+test('episode 1 can be downloaded and is included in the searchable library', async t => {
+  const { store } = await setup(t, results(1));
+  assert.equal((await store.getTranscript(show, 1)).episode, 1);
+  const result = await store.searchTranscripts({query: 'Test transcript text'});
+  assert.equal(result.matches[0].episode, 1);
+  assert.deepEqual(result.missing[0].ranges, []);
 });
 
 test('ignores substring matches and unrelated shows and deduplicates links', async t => {
@@ -258,59 +267,181 @@ test('edits deferred response with multipart PDF and correct attachment referenc
   });
 });
 
-const interaction = { data: { options: [{ name: 'episode', value: 22 }, { name: 'show', value: show }] } };
-
-test('returns metadata and PDF to Discord', async () => {
-  const edits = [];
-  await respondWithTranscript(interaction, {
-    store: { getTranscript: async (s, ep) => {
-      assert.equal(s, show);
-      assert.equal(ep, 22);
-      return { show: 'Show', episode: 22, title: 'Title', description: 'Description', pdf };
-    } },
-    edit: async (...args) => edits.push(args),
-  });
-  assert.equal(edits[0][1].embeds[0].title, 'Title');
-  assert.equal(edits[0][1].embeds[0].description, 'Description');
-  assert.deepEqual(edits[0][2].pdf, pdf);
+test('parses lists and inclusive ranges after removing spaces and deduplicates overlaps', () => {
+  assert.deepEqual([...parseEpisodes(' 1, 5 - 10 ')], [1, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual([...parseEpisodes('10,5-7,6-9,1,1,05')], [1, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual([...parseEpisodes('3-3')], [3]);
+  assert.equal(parseEpisodes('1,5-10').count, 7);
+  const huge = parseEpisodes('1-9007199254740991');
+  assert.equal(huge.count, Number.MAX_SAFE_INTEGER);
+  assert.deepEqual(huge.ranges, [[1, Number.MAX_SAFE_INTEGER]]);
+  assert.deepEqual([...validateBulkTranscriptOptions({show, episodes: '1,5-6', reload: true})], [1, 5, 6]);
 });
 
-test('passes the optional reload boolean from Discord to the transcript store', async () => {
-  let received;
-  await respondWithTranscript({ ...interaction, data: { options: [...interaction.data.options, {name: 'reload', value: true}] } }, {
-    store: { getTranscript: async (...options) => {
-      received = options;
-      return { title: 'Title', description: 'Description', pdf };
-    } }, edit: async () => {},
-  });
-  assert.deepEqual(received, [show, 22, true]);
-});
-
-test('sends useful errors and handles Discord upload failures', async () => {
-  const messages = [];
-  for (const error of [new TranscriptError('Not found'), new Error('Network error')]) {
-    await respondWithTranscript(interaction, {
-      store: { getTranscript: async () => { throw error; } },
-      edit: async (_, payload) => messages.push(payload), logger: { error() {} },
-    });
+test('rejects malformed episode selections before any download', async () => {
+  for (const value of ['', ' ', '1,', ',1', '1,,2', '1--2', '1-2-3', '5-1', '0', '0-3', '-1', '1.5', '1;2', '1/2', '1–3', '+1', '1e2', '9007199254740992', undefined, 2]) {
+    assert.throws(() => parseEpisodes(value), /Malformed episodes option/, String(value));
   }
-  assert.equal(messages[0].content, 'Not found');
-  assert.match(messages[1].content, /try again/);
-  let count = 0;
-  await respondWithTranscript(interaction, {
-    store: { getTranscript: async () => ({ show: 'Show', episode: 22, title: 'Title', description: 'Description', pdf }) },
-    edit: async () => { if (++count === 1) throw new Error('Upload failed'); },
-    logger: { error() {} },
+  const messages = [];
+  await respondWithTranscript({data: {options: [{name: 'show', value: show}, {name: 'episodes', value: '1,,5'}]}}, {
+    store: {getTranscript: () => assert.fail('Malformed options must not start downloads')},
+    edit: async (_, payload) => messages.push(payload),
   });
-  assert.equal(count, 2);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0].content, /Malformed episodes option/);
 });
 
-test('offers download link if the PDF exceeds Discord attachment limit', async () => {
-  await respondWithTranscript({ ...interaction, attachment_size_limit: 1 }, {
-    store: { getTranscript: async () => ({ pdf, pdfUrl: `${base}/test.pdf` }) },
+const bulkInteraction = {
+  application_id: 'app', token: 'token',
+  data: {options: [{name: 'show', value: show}, {name: 'episodes', value: '1,3-5,4'}]},
+};
+
+test('announces bulk work before fetching, processes serially, and pauses one second between episodes', async () => {
+  const events = [];
+  const edits = [];
+  await respondWithTranscript(bulkInteraction, {
+    store: {getTranscript: async (slug, episode) => {
+      assert.equal(slug, show);
+      events.push(['fetch', episode]);
+      return { pdf };
+    }},
+    edit: async (_, payload, file) => {
+      events.push(['edit']);
+      edits.push(payload);
+      assert.equal(file, undefined, 'Bulk downloads must not attach transcript PDFs');
+      return {id: 'original', channel_id: 'channel'};
+    },
+    wait: async ms => events.push(['wait', ms]),
+  });
+  assert.deepEqual(events, [['edit'], ['fetch', 1], ['wait', 1000], ['fetch', 3], ['wait', 1000], ['fetch', 4], ['wait', 1000], ['fetch', 5], ['edit']]);
+  assert.equal(edits.length, 2);
+  assert.match(edits[0].content, /commenced.*4 episodes/);
+  assert.match(edits[1].content, /download complete/);
+  assert.match(edits[1].content, /Processed: 4.*: 4\. Failed: 0/);
+  assert.match(edits[1].content, /No episodes failed/);
+});
+
+test('continues after individual failures and reports every failed episode in the edited summary', async () => {
+  const calls = [];
+  const messages = [];
+  const logs = [];
+  await respondWithTranscript(bulkInteraction, {
+    store: {getTranscript: async (_, episode) => {
+      calls.push(episode);
+      if (episode === 3 || episode === 4) throw new TranscriptError('No PDF published');
+    }},
+    wait: async ms => assert.equal(ms, 1000),
+    edit: async (_, payload, file) => { messages.push(payload); assert.equal(file, undefined); },
+    logger: {error: (...args) => logs.push(args.join(' '))},
+  });
+  assert.deepEqual(calls, [1, 3, 4, 5]);
+  assert.match(messages.at(-1).content, /Processed: 4.*: 2\. Failed: 2/);
+  assert.match(messages.at(-1).content, /Failed episodes: 3-4/);
+  assert.equal(logs.length, 2);
+  assert.match(logs[0], /episode 3: No PDF published/);
+});
+
+test('single-episode requests honor reload without a leading or trailing pause', async () => {
+  let received;
+  await respondWithTranscript({ ...bulkInteraction, data: {options: [
+    {name: 'show', value: show}, {name: 'episodes', value: '835'}, {name: 'reload', value: true},
+  ]}}, {
+    store: {getTranscript: async (...args) => {
+      received = args;
+      return {title: 'Episode 835', description: 'Episode description', pdf};
+    }},
+    edit: async (_, payload, file) => {
+      assert.equal(payload.embeds[0].title, 'Episode 835');
+      assert.deepEqual(file.pdf, pdf);
+    },
+    wait: () => assert.fail('Only pause between episodes'),
+  });
+  assert.deepEqual(received, [show, 835, true]);
+});
+
+test('a selection resolving to one episode returns its metadata and PDF with no bulk announcement', async () => {
+  for (const episodes of ['11', ' 11 ', '11-11', '11,11']) {
+    const events = [];
+    const transcript = {title: 'MBMBaM 11: Episode title', description: 'Episode description', sourceUrl: `${base}/episode-11/`, filename: '11.pdf', pdf};
+    await respondWithTranscript({...bulkInteraction, data: {options: [{name: 'show', value: show}, {name: 'episodes', value: episodes}]}}, {
+      store: {getTranscript: async (slug, episode) => {
+        assert.equal(slug, show);
+        assert.equal(episode, 11);
+        events.push('fetch');
+        return transcript;
+      }},
+      edit: async (_, payload, file) => {
+        events.push('edit');
+        assert.deepEqual(payload.embeds, [{title: transcript.title, url: transcript.sourceUrl, description: transcript.description}]);
+        assert.equal(payload.content, undefined);
+        assert.equal(file, transcript);
+        assert.deepEqual(payload.allowed_mentions, {parse: []});
+      },
+      wait: () => assert.fail('A single episode has no pauses'),
+    });
+    assert.deepEqual(events, ['fetch', 'edit']);
+  }
+});
+
+test('single-episode errors return useful messages instead of bulk completion summaries', async () => {
+  for (const error of [new TranscriptError('No PDF transcript was found.'), new Error('Network error')]) {
+    const messages = [];
+    await respondWithTranscript({...bulkInteraction, data: {options: [{name: 'show', value: show}, {name: 'episodes', value: '11'}]}}, {
+      store: {getTranscript: async () => {throw error;}},
+      edit: async (_, payload, file) => {messages.push(payload); assert.equal(file, undefined);},
+      logger: {error() {}},
+    });
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].content, error instanceof TranscriptError ? error.message : 'Unable to retrieve or send the transcript right now. Please try again later.');
+    assert.deepEqual(messages[0].attachments, []);
+  }
+});
+
+test('single-episode requests link PDFs exceeding the attachment limit', async () => {
+  await respondWithTranscript({...bulkInteraction, attachment_size_limit: 1, data: {options: [{name: 'show', value: show}, {name: 'episodes', value: '11'}]}}, {
+    store: {getTranscript: async () => ({pdf, pdfUrl: `${base}/episode-11.pdf`})},
     edit: async (_, payload, file) => {
       assert.equal(file, undefined);
-      assert.match(payload.content, /https:\/\/maximumfun.org\/test.pdf/);
-    }, logger: { error() {} },
+      assert.match(payload.content, /exceeds Discord's attachment limit/);
+      assert.match(payload.content, /https:\/\/maximumfun.org\/episode-11.pdf/);
+    },
+    logger: {error() {}},
   });
+});
+
+test('long failure lists are preserved in a text report without attaching PDFs', async () => {
+  let report;
+  await respondWithTranscript({ ...bulkInteraction, data: {options: [
+    {name: 'show', value: show}, {name: 'episodes', value: '1-2001'},
+  ]}}, {
+    store: {getTranscript: async (_, episode) => { if (episode % 2) throw new Error('Not found'); }},
+    edit: async (_, payload, file) => {
+      assert.ok(payload.content.length <= 2000);
+      if (file) report = file;
+    },
+    logger: {error() {}}, wait: async () => {},
+  });
+  assert.equal(report.filename, 'failed-episodes.txt');
+  assert.equal(report.contentType, 'text/plain');
+  assert.match(report.pdf.toString(), /^Failed episodes: 1,3,5/);
+  assert.ok(report.pdf.toString().endsWith('1999,2001.'));
+});
+
+test('long-running jobs edit the same channel message when the interaction token has expired', async () => {
+  const original = {id: 'original', channel_id: 'channel'};
+  const payload = {content: 'Bulk transcript download complete', allowed_mentions: {parse: []}};
+  let requests = 0;
+  await completeTranscriptResponse(bulkInteraction, payload, original, {
+    edit: async () => { throw new Error('Discord response failed (HTTP 401).'); },
+    botToken: 'test-bot-token',
+    fetchImpl: async (url, options) => {
+      requests++;
+      assert.equal(url, 'https://discord.com/api/v10/channels/channel/messages/original');
+      assert.equal(options.method, 'PATCH');
+      assert.equal(options.headers.Authorization, 'Bot test-bot-token');
+      assert.deepEqual(JSON.parse(options.body), payload);
+      return new Response(JSON.stringify(original));
+    },
+  });
+  assert.equal(requests, 1);
 });

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { InstallGlobalCommands } from './utils.js';
 import { TRANSCRIPT_COMMAND } from './transcript-command.js';
 import { SEARCH_COMMAND } from './search-command.js';
+import { LIST_COMMAND } from './list-command.js';
 
 // Simple test command
 const TEST_COMMAND = {
@@ -12,7 +13,7 @@ const TEST_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, TRANSCRIPT_COMMAND, SEARCH_COMMAND];
+const ALL_COMMANDS = [TEST_COMMAND, TRANSCRIPT_COMMAND, SEARCH_COMMAND, LIST_COMMAND];
 
 try {
   const registered = await InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);

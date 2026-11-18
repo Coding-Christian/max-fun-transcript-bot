@@ -9,7 +9,8 @@ export const SEARCH_COMMAND = {
   contexts: [0, 1, 2],
   options: [
     { name: 'query', description: 'Text to search for (up to 100 characters).', type: 3, required: true, min_length: 1, max_length: 100 },
-    ...TRANSCRIPT_COMMAND.options.filter(option => option.name !== 'reload').map(option => ({ ...option, required: false })),
+    { ...TRANSCRIPT_COMMAND.options.find(option => option.name === 'show'), required: false },
+    { name: 'episode', description: 'The episode number (greater than 1).', type: 4, required: false, min_value: 2 },
   ],
 };
 
@@ -18,5 +19,8 @@ export function validateSearchOptions({ query, show, episode }) {
     throw new Error('Query must contain searchable letters or numbers and be 100 characters or less.');
   }
   if (show !== undefined && !Object.hasOwn(SHOWS, show)) throw new Error('Please select a supported show.');
-  if (episode !== undefined) validateTranscriptOptions(show ?? Object.keys(SHOWS)[0], episode);
+  if (episode !== undefined) {
+    validateTranscriptOptions(show ?? Object.keys(SHOWS)[0], episode);
+    if (episode < 2) throw new Error('Episode must be an integer greater than 1.');
+  }
 }

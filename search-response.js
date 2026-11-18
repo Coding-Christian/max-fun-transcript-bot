@@ -14,7 +14,7 @@ export function noResultsMessage(result) {
     } else if (episode !== undefined) {
       lines.push(`${show}: No missing episodes below ${highest} match the episode filter.`);
     } else {
-      lines.push(`${show}: All episodes from 2 through ${highest} are downloaded and searched; no matches found.`);
+      lines.push(`${show}: All episodes from 1 through ${highest} are downloaded and searched; no matches found.`);
     }
   }
   lines.push('Search only covers downloaded transcripts; episodes above the highest downloaded number have not been checked.');

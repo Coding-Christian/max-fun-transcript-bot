@@ -8,10 +8,12 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 import { getRandomEmoji } from './utils.js';
-import { validateTranscriptOptions } from './transcript-command.js';
+import { validateBulkTranscriptOptions } from './transcript-command.js';
 import { respondWithTranscript } from './transcript-response.js';
 import { validateSearchOptions } from './search-command.js';
 import { respondWithSearch } from './search-response.js';
+import { validateListOptions } from './list-command.js';
+import { respondWithList } from './list-response.js';
 
 // Create an express app
 const app = express();
@@ -40,11 +42,12 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
 
-    if (name === 'transcript' || name === 'search') {
+    if (name === 'transcript' || name === 'search' || name === 'list') {
       const options = Object.fromEntries((data.options || []).map(({ name, value }) => [name, value]));
       try {
-        if (name === 'transcript') validateTranscriptOptions(options.show, options.episode, options.reload);
-        else validateSearchOptions(options);
+        if (name === 'transcript') validateBulkTranscriptOptions(options);
+        else if (name === 'search') validateSearchOptions(options);
+        else validateListOptions(options);
       } catch (error) {
         return res.send({
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -53,7 +56,8 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       }
       res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
       if (name === 'transcript') void respondWithTranscript(req.body);
-      else void respondWithSearch(req.body);
+      else if (name === 'search') void respondWithSearch(req.body);
+      else void respondWithList(req.body);
       return;
     }
 

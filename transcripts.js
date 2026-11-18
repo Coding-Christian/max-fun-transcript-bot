@@ -76,7 +76,7 @@ export function createTranscriptStore({
       }
       for (const file of files.filter(file => /^[1-9]\d*\.json$/.test(file))) {
         const episode = Number(file.slice(0, -5));
-        if (!Number.isSafeInteger(episode) || episode < 2) continue;
+        if (!Number.isSafeInteger(episode) || episode < 1) continue;
         let metadata;
         try {
           metadata = JSON.parse(await readFile(path.join(directory, file), 'utf8'));
@@ -208,6 +208,10 @@ export function createTranscriptStore({
   }
 
   return {
+    async listTranscripts(show) {
+      validateTranscriptOptions(show, 1);
+      return (await inventory(show)).sort((a, b) => a.episode - b.episode);
+    },
     async getTranscript(show, episode, reload = false) {
       validateTranscriptOptions(show, episode, reload);
       const key = `${show}/${episode}`;
@@ -254,7 +258,7 @@ export function missingEpisodes(entries, { show, episode } = {}) {
     if (episode !== undefined) {
       if (episode < highest && !numbers.includes(episode)) ranges.push([episode, episode]);
     } else {
-      let start = 2;
+      let start = 1;
       for (const number of numbers) {
         if (number > start) ranges.push([start, number - 1]);
         start = number + 1;
