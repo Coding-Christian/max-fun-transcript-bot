@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, stat, rename, writeFile, rm } from 'node:fs/p
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { SHOWS, validateTranscriptOptions } from './transcript-command.js';
+import { SHOWS, validateTranscriptOptions, validateTranscriptURL } from './transcript-command.js';
 import { extractPDFText, normalizeSearchText, matchingExcerpt } from './transcript-text.js';
 import { validateSearchOptions } from './search-command.js';
 
@@ -29,8 +29,31 @@ function urlEpisode(url) {
   return slug?.match(/(?:^|-)mbmbam-(?:ep(?:isode)?-?)?0*(\d+)(?:-|$)/i)?.[1];
 }
 
+function displayedEpisode(page) {
+  const field = page('#from-episode-number');
+  return clean(field.find('a').first().text() || field.text()).replace(/^Episode\s+number:\s*/i, '');
+}
+
 function isPDF(buffer) {
   return buffer.subarray(0, 5).toString() === '%PDF-';
+}
+
+function pageMetadata(page, url, show, episode, override = false) {
+  const href = page('a.btn-transcript-download[href]').first().attr('href');
+  if (!href) return null;
+  const heading = clean(page('#transcript-title h1').text() || page('h1').first().text());
+  let title = heading.replace(/^TRANSCRIPT\s*/i, '') || `${SHOWS[show].name} — Episode ${episode}`;
+  if (override) {
+    title = title.replace(/\b(MBMBaM\s*(?:Ep(?:isode)?\.?\s*)?#?\s*)0*\d+\b/i,
+      (_, prefix) => prefix + episode);
+  }
+  return {
+    show: SHOWS[show].name, episode, title,
+    description: clean(page('#from-episode-description').text()) || 'No episode description is available.',
+    sourceUrl: url,
+    pdfUrl: siteURL(href, url),
+    ...(override ? { sourceTitle: heading } : {}),
+  };
 }
 
 // Inject the HTTP client and cache path so lookup behavior can be tested offline.
@@ -93,13 +116,25 @@ export function createTranscriptStore({
     return entries.sort((a, b) => a.slug.localeCompare(b.slug) || b.episode - a.episode);
   }
 
-  async function request(url, pdf = false) {
-    const response = await fetchImpl(url, {
-      signal: AbortSignal.timeout(30_000),
-      headers: { 'User-Agent': 'TranscriptBot/1.0', Accept: pdf ? 'application/pdf' : 'text/html' },
-    });
+  async function request(url, pdf = false, transcriptPage = false) {
+    let currentURL = url;
+    let response;
+    for (let redirects = 0; ; redirects++) {
+      response = await fetchImpl(currentURL, {
+        signal: AbortSignal.timeout(30_000), redirect: 'manual',
+        headers: { 'User-Agent': 'TranscriptBot/1.0', Accept: pdf ? 'application/pdf' : 'text/html' },
+      });
+      if (![301, 302, 303, 307, 308].includes(response.status)) break;
+      const location = response.headers.get('location');
+      if (!location || redirects >= 5) throw new Error('Invalid or excessive Maximum Fun redirects.');
+      currentURL = siteURL(location, currentURL);
+      if (transcriptPage) currentURL = validateTranscriptURL(currentURL);
+    }
     if (!response.ok) throw new Error(`Maximum Fun returned HTTP ${response.status}.`);
-    if (!pdf) return response.text();
+    if (!pdf) {
+      const html = await response.text();
+      return transcriptPage ? { html, url: currentURL } : html;
+    }
     if (Number(response.headers.get('content-length')) > MAX_PDF_BYTES) {
       throw new TranscriptError('This transcript is too large to download.');
     }
@@ -117,7 +152,60 @@ export function createTranscriptStore({
     return buffer;
   }
 
-  async function lookup(show, episode, reload) {
+  async function matchingMetadata(url, show, episode) {
+    const page = load(await request(url));
+    const heading = clean(page('#transcript-title h1').text() || page('h1').first().text());
+    const explicitNumber = displayedEpisode(page);
+    const headingNumber = titleEpisode(heading);
+    const urlNumber = urlEpisode(url);
+    const hasBothNumbers = Boolean(headingNumber && urlNumber);
+    if (hasBothNumbers && Number(headingNumber) !== Number(urlNumber)) return null;
+    // If either the URL or heading omits a number, prefer from-episode-number.
+    // Otherwise the agreeing URL/title take precedence over the displayed field.
+    const number = hasBothNumbers ? headingNumber : explicitNumber || headingNumber || urlNumber;
+    if (!/^\d+$/.test(number || '') || Number(number) !== episode) return null;
+    const metadata = pageMetadata(page, url, show, episode);
+    if (metadata && hasBothNumbers && explicitNumber && Number(explicitNumber) !== episode) {
+      logger.warn(`Transcript episode-number conflict: ${url} identifies episode ${episode} in its URL and title, but from-episode-number displays ${explicitNumber}. Using episode ${episode}.`);
+    }
+    return metadata;
+  }
+
+  async function findThroughEpisodePages(show, episode, visitedTranscripts) {
+    const searchURL = new URL('/episodes/', ORIGIN);
+    searchURL.searchParams.set('_podcast', show);
+    searchURL.searchParams.set('_search', String(episode));
+    const visitedEpisodes = new Set();
+    for (let number = 1; number <= 20; number++) {
+      if (number > 1) searchURL.searchParams.set('_paged', String(number));
+      const results = load(await request(searchURL.href));
+      const candidates = new Set();
+      results('a[href]').each((_, element) => {
+        const url = new URL(results(element).attr('href'), searchURL);
+        if (url.origin === ORIGIN && url.pathname.startsWith(`/episodes/${show}/`) &&
+            Number(urlEpisode(url.href)) === episode && !visitedEpisodes.has(url.href)) candidates.add(url.href);
+      });
+      if (!candidates.size) break;
+      for (const url of candidates) {
+        visitedEpisodes.add(url);
+        const page = load(await request(url));
+        const links = new Set();
+        page('a[href]').each((_, element) => {
+          const link = new URL(page(element).attr('href'), url);
+          if (link.origin === ORIGIN && link.pathname.startsWith(`/transcripts/${show}/`) &&
+              !visitedTranscripts.has(link.href)) links.add(link.href);
+        });
+        for (const link of links) {
+          visitedTranscripts.add(link);
+          const metadata = await matchingMetadata(link, show, episode);
+          if (metadata) return metadata;
+        }
+      }
+    }
+    return null;
+  }
+
+  async function lookup(show, episode, reload, overrideURL) {
     const directory = path.resolve(cacheDir, show);
     const pdfPath = path.join(directory, `${episode}.pdf`);
     const metadataPath = path.join(directory, `${episode}.json`);
@@ -135,56 +223,49 @@ export function createTranscriptStore({
       }
     }
 
-    const searchURL = new URL('/transcripts/', ORIGIN);
-    searchURL.searchParams.set('_podcast', show);
-    const visited = new Set();
     let metadata;
-    // Older transcripts use numbers such as 022; the site's index distinguishes them.
-    const searchTerms = [...new Set([String(episode), String(episode).padStart(3, '0')])];
-    for (const term of searchTerms) {
-      if (metadata) break;
-      searchURL.searchParams.delete('_paged');
-      searchURL.searchParams.set('_search', term);
-      // FacetWP uses _paged for subsequent search result pages.
-      for (let page = 1; page <= 20 && !metadata; page++) {
-        if (page > 1) searchURL.searchParams.set('_paged', String(page));
-        const $ = load(await request(searchURL.href));
-        const candidates = new Set();
-        $('a[href]').each((_, element) => {
-          const href = $(element).attr('href');
-          const url = new URL(href, searchURL);
-          if (url.origin === ORIGIN && url.pathname.startsWith(`/transcripts/${show}/`) &&
-              !visited.has(url.href)) candidates.add(url.href);
-        });
-        if (!candidates.size) break;
-        for (const url of candidates) {
-          visited.add(url);
-          const page = load(await request(url));
-          const heading = clean(page('#transcript-title h1').text() || page('h1').first().text());
-          const explicitNumber = clean(page('#from-episode-number a').first().text());
-          const headingNumber = titleEpisode(heading);
-          const urlNumber = urlEpisode(url);
-          // Do not let a copied episode-number field override an agreeing title/URL.
-          if (headingNumber && urlNumber && Number(headingNumber) !== Number(urlNumber)) continue;
-          const agrees = headingNumber && urlNumber && Number(headingNumber) === Number(urlNumber);
-          const number = agrees ? headingNumber : explicitNumber || headingNumber;
-          if (!/^\d+$/.test(number || '') || Number(number) !== episode) continue;
-          const href = page('a.btn-transcript-download[href]').first().attr('href');
-          if (!href) continue;
-          if (agrees && explicitNumber && Number(explicitNumber) !== episode) {
-            logger.warn(`Transcript episode-number conflict: ${url} identifies episode ${episode} in its URL and title, but from-episode-number displays ${explicitNumber}. Using episode ${episode}.`);
+    if (overrideURL) {
+      const source = await request(overrideURL, false, true);
+      const page = load(source.html);
+      metadata = pageMetadata(page, source.url, show, episode, true);
+      if (!metadata) throw new TranscriptError('No PDF transcript download link was found on the provided page.');
+      const headingNumber = titleEpisode(metadata.sourceTitle);
+      const urlNumber = urlEpisode(overrideURL);
+      const displayed = displayedEpisode(page);
+      if ([headingNumber, urlNumber, displayed].some(value => value && Number(value) !== episode)) {
+        logger.warn(`Transcript URL override: saving ${overrideURL} as episode ${episode}; URL number: ${urlNumber || 'unknown'}, title number: ${headingNumber || 'unknown'}, from-episode-number: ${displayed || 'unknown'}. Using the requested episode number.`);
+      }
+    } else {
+      const searchURL = new URL('/transcripts/', ORIGIN);
+      searchURL.searchParams.set('_podcast', show);
+      const visited = new Set();
+      // Older transcripts use numbers such as 022; the site's index distinguishes them.
+      const searchTerms = [...new Set([String(episode), String(episode).padStart(3, '0')])];
+      for (const term of searchTerms) {
+        if (metadata) break;
+        searchURL.searchParams.delete('_paged');
+        searchURL.searchParams.set('_search', term);
+        // FacetWP uses _paged for subsequent search result pages.
+        for (let page = 1; page <= 20 && !metadata; page++) {
+          if (page > 1) searchURL.searchParams.set('_paged', String(page));
+          const $ = load(await request(searchURL.href));
+          const candidates = new Set();
+          $('a[href]').each((_, element) => {
+            const href = $(element).attr('href');
+            const url = new URL(href, searchURL);
+            if (url.origin === ORIGIN && url.pathname.startsWith(`/transcripts/${show}/`) &&
+                !visited.has(url.href)) candidates.add(url.href);
+          });
+          if (!candidates.size) break;
+          for (const url of candidates) {
+            visited.add(url);
+            metadata = await matchingMetadata(url, show, episode);
+            if (metadata) break;
           }
-          metadata = {
-            show: SHOWS[show].name,
-            episode,
-            title: heading.replace(/^TRANSCRIPT\s*/i, '') || heading,
-            description: clean(page('#from-episode-description').text()) || 'No episode description is available.',
-            sourceUrl: url,
-            pdfUrl: siteURL(href, url),
-          };
-          break;
         }
       }
+      // Unnumbered transcripts can be absent from numeric transcript searches.
+      if (!metadata) metadata = await findThroughEpisodePages(show, episode, visited);
     }
     if (!metadata) {
       throw new TranscriptError(`No PDF transcript was found for ${SHOWS[show].name}, episode ${episode}. It may not have been published yet.`);
@@ -212,16 +293,18 @@ export function createTranscriptStore({
       validateTranscriptOptions(show, 1);
       return (await inventory(show)).sort((a, b) => a.episode - b.episode);
     },
-    async getTranscript(show, episode, reload = false) {
+    async getTranscript(show, episode, reload = false, url) {
       validateTranscriptOptions(show, episode, reload);
+      const overrideURL = url === undefined ? undefined : validateTranscriptURL(url);
+      const refresh = reload || overrideURL !== undefined;
       const key = `${show}/${episode}`;
       const existing = pending.get(key);
-      if (existing && (!reload || existing.reload)) return existing.promise;
-      const record = { reload };
+      if (existing && (!refresh || (existing.reload && existing.url === overrideURL))) return existing.promise;
+      const record = { reload: refresh, url: overrideURL };
       record.promise = (async () => {
         // A reload arriving during a normal fetch must still fetch a fresh copy.
         if (existing) await existing.promise.catch(() => {});
-        const transcript = await lookup(show, episode, reload);
+        const transcript = await lookup(show, episode, refresh, overrideURL);
         await ensureText(show, episode, transcript.pdf);
         return transcript;
       })().finally(() => {

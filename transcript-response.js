@@ -83,7 +83,7 @@ export async function respondWithTranscript(interaction, {
   if (selection.count === 1) {
     const episode = selection.ranges[0][0];
     try {
-      const transcript = await store.getTranscript(options.show, episode, options.reload);
+      const transcript = await store.getTranscript(options.show, episode, options.reload, options.url);
       if (transcript.pdf.length > (interaction.attachment_size_limit || 10 * 1024 * 1024)) {
         throw new TranscriptError(`This PDF exceeds Discord's attachment limit. Download it from ${transcript.pdfUrl}`);
       }
@@ -128,7 +128,8 @@ export async function respondWithTranscript(interaction, {
       }
       processed++;
     }
-    const summary = `Bulk transcript download complete for ${show}.\nProcessed: ${processed}. Ready (downloaded or already cached): ${ready}. Failed: ${failed.length}.`;
+    const counts = `Bulk transcript download complete for ${show}.\nProcessed: ${processed}. Ready (downloaded or already cached): ${ready}. Failed: ${failed.length}.`;
+    const summary = `${counts}\nEpisodes: ${options.episodes}`;
     const failures = failed.length ? `Failed episodes: ${episodeList(failed)}.` : 'No episodes failed.';
     const payload = {
       content: `${summary}\n${failures}`,
@@ -137,8 +138,8 @@ export async function respondWithTranscript(interaction, {
     };
     let file;
     if (payload.content.length > 2000) {
-      payload.content = `${summary}\nThe complete list of failed episodes is attached as a text report.`;
-      file = { filename: 'failed-episodes.txt', pdf: Buffer.from(failures), contentType: 'text/plain' };
+      payload.content = `${summary.length <= 1800 ? summary : counts}\nThe requested episodes and complete list of failed episodes are attached as a text report.`;
+      file = { filename: 'failed-episodes.txt', pdf: Buffer.from(`${summary}\n${failures}`), contentType: 'text/plain' };
     }
     await completeTranscriptResponse(interaction, payload, originalMessage, { edit, file, fetchImpl, botToken });
   } catch (error) {

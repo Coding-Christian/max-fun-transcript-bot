@@ -3,6 +3,18 @@ import { validateListOptions } from './list-command.js';
 import { transcriptStore } from './transcripts.js';
 import { editTranscriptResponse } from './transcript-response.js';
 
+function formatEpisodes(episodes) {
+  const numbers = episodes.map(entry => entry.episode);
+  if (numbers.length <= 10) return numbers.join(', ');
+  const ranges = [];
+  for (const number of numbers) {
+    const previous = ranges.at(-1);
+    if (previous && number === previous[1] + 1) previous[1] = number;
+    else ranges.push([number, number]);
+  }
+  return ranges.map(([first, last]) => first === last ? String(first) : `${first} - ${last}`).join(', ');
+}
+
 export async function respondWithList(interaction, {
   store = transcriptStore,
   edit = editTranscriptResponse,
@@ -14,7 +26,7 @@ export async function respondWithList(interaction, {
     const episodes = await store.listTranscripts(options.show);
     const show = SHOWS[options.show].name;
     const content = episodes.length
-      ? `Downloaded transcripts for ${show} (${episodes.length} episode${episodes.length === 1 ? '' : 's'}):\n${episodes.map(entry => entry.episode).join(', ')}`
+      ? `Downloaded transcripts for ${show} (${episodes.length} episode${episodes.length === 1 ? '' : 's'}):\n${formatEpisodes(episodes)}`
       : `No transcripts have been downloaded for ${show} yet. Use /transcript to download episodes.`;
     if (content.length <= 2000) {
       await edit(interaction, { content, allowed_mentions: { parse: [] } });

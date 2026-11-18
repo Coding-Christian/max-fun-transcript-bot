@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTranscriptStore, TranscriptError } from '../transcripts.js';
-import { TRANSCRIPT_COMMAND, validateTranscriptOptions, parseEpisodes, validateBulkTranscriptOptions } from '../transcript-command.js';
+import { TRANSCRIPT_COMMAND, validateTranscriptOptions, parseEpisodes, validateBulkTranscriptOptions, validateTranscriptURL } from '../transcript-command.js';
 import { editTranscriptResponse, respondWithTranscript, completeTranscriptResponse } from '../transcript-response.js';
 
 const show = 'my-brother-my-brother-and-me';
@@ -20,7 +20,8 @@ async function setup(t, pages, options = {}) {
   const cacheDir = await mkdtemp(path.join(tmpdir(), 'transcript-test-'));
   t.after(() => rm(cacheDir, { recursive: true, force: true }));
   const calls = [];
-  const store = createTranscriptStore({ cacheDir, extractText: async () => 'Test transcript text\n', fetchImpl: async (url) => {
+  const store = createTranscriptStore({ cacheDir, extractText: async () => 'Test transcript text\n', fetchImpl: async (url, options) => {
+    assert.equal(options.redirect, 'manual');
     calls.push(url);
     assert.ok(pages.has(url), `Unexpected request: ${url}`);
     const data = pages.get(url);
@@ -35,18 +36,20 @@ function results(episode, urls = ['unusual-page-name']) {
       `<h4><a href="/transcripts/${show}/${url}/">Transcript</a></h4>`).join('')],
     ...urls.map(url => [`${base}/transcripts/${show}/${url}/`, page(episode)]),
     [`${base}/wp-content/uploads/test.pdf`, pdf],
+    [`${base}/episodes/?_podcast=${show}&_search=${episode}`, ''],
     ...(episode < 100 ? [[`${base}/transcripts/?_podcast=${show}&_search=${String(episode).padStart(3, '0')}`, '']] : []),
   ]);
 }
 
 test('command requires a supported show and episode list with optional reload', () => {
   assert.equal(TRANSCRIPT_COMMAND.name, 'transcript');
-  assert.deepEqual(TRANSCRIPT_COMMAND.options.map(o => [o.name, o.required]), [['show', true], ['episodes', true], ['reload', false]]);
+  assert.deepEqual(TRANSCRIPT_COMMAND.options.map(o => [o.name, o.required]), [['show', true], ['episodes', true], ['reload', false], ['url', false]]);
   assert.equal(TRANSCRIPT_COMMAND.options[0].choices.length, 1);
   assert.equal(TRANSCRIPT_COMMAND.options[1].type, 3);
   validateTranscriptOptions(show, 1);
   validateTranscriptOptions(show, 2);
   assert.equal(TRANSCRIPT_COMMAND.options[2].type, 5);
+  assert.equal(TRANSCRIPT_COMMAND.options[3].type, 3);
   validateTranscriptOptions(show, 2, true);
   validateTranscriptOptions(show, 2, false);
   for (const reload of ['true', 1, null]) assert.throws(() => validateTranscriptOptions(show, 2, reload));
@@ -95,6 +98,46 @@ test('uses title when the explicit episode field is absent', async t => {
   pages.set(`${base}/transcripts/${show}/unusual-page-name/`, page(22).replace('<div id="from-episode-number"><a>22</a></div>', ''));
   const { store } = await setup(t, pages);
   assert.equal((await store.getTranscript(show, 22)).episode, 22);
+});
+
+test('uses from-episode-number when the URL, title, or both omit a number', async t => {
+  for (const [slug, heading] of [
+    ['transcript-mbmbam-am-i-the-sphincter', 'TRANSCRIPT MBMBaM: Am I the Sphincter?'],
+    ['transcript-mbmbam-677-am-i-the-sphincter', 'TRANSCRIPT MBMBaM: Am I the Sphincter?'],
+    ['transcript-mbmbam-am-i-the-sphincter', 'TRANSCRIPT MBMBaM 678: Am I the Sphincter?'],
+    ['transcript-mbmbam-678-am-i-the-sphincter', 'TRANSCRIPT MBMBaM: Am I the Sphincter?'],
+  ]) {
+    for (const plainText of [false, true]) {
+      const pages = results(677, [slug]);
+      let html = page(677).replace('TRANSCRIPT MBMBaM 677: A title &amp; more', heading);
+      if (plainText) html = html.replace('<a>677</a>', '<strong>Episode number:</strong> 677');
+      pages.set(`${base}/transcripts/${show}/${slug}/`, html);
+      const {store} = await setup(t, pages);
+      const transcript = await store.getTranscript(show, 677);
+      assert.equal(transcript.episode, 677);
+      assert.equal(transcript.filename, `${show}-677.pdf`);
+      assert.deepEqual(transcript.pdf, pdf);
+    }
+  }
+});
+
+test('finds unnumbered transcripts through episode pages when numeric transcript search has no results', async t => {
+  const transcriptURL = `${base}/transcripts/${show}/transcript-mbmbam-am-i-the-sphincter/`;
+  const episodeURL = `${base}/episodes/${show}/mbmbam-677-am-i-the-sphincter/`;
+  const pages = results(677, []);
+  pages.set(`${base}/episodes/?_podcast=${show}&_search=677`, `<a href="${episodeURL}">MBMBaM 677: Am I the Sphincter?</a><a href="${episodeURL}">Duplicate image link</a><a href="/episodes/${show}/mbmbam-1677-unrelated/">Unrelated result</a>`);
+  pages.set(episodeURL, `<h1>MBMBaM 677: Am I the Sphincter?</h1><a href="${transcriptURL}">Read transcript</a>`);
+  pages.set(transcriptURL, page(677).replace('TRANSCRIPT MBMBaM 677: A title &amp; more', 'TRANSCRIPT MBMBaM: Am I the Sphincter?'));
+  const {store, calls} = await setup(t, pages);
+  const transcript = await store.getTranscript(show, 677);
+  assert.equal(transcript.episode, 677);
+  assert.equal(transcript.sourceUrl, transcriptURL);
+  assert.deepEqual(transcript.pdf, pdf);
+  assert.deepEqual(calls, [
+    `${base}/transcripts/?_podcast=${show}&_search=677`,
+    `${base}/episodes/?_podcast=${show}&_search=677`,
+    episodeURL, transcriptURL, `${base}/wp-content/uploads/test.pdf`,
+  ]);
 });
 
 test('trusts agreeing URL and title over incorrect displayed episode and warns on the server', async t => {
@@ -318,6 +361,7 @@ test('announces bulk work before fetching, processes serially, and pauses one se
   assert.match(edits[0].content, /commenced.*4 episodes/);
   assert.match(edits[1].content, /download complete/);
   assert.match(edits[1].content, /Processed: 4.*: 4\. Failed: 0/);
+  assert.match(edits[1].content, /Episodes: 1,3-5,4/);
   assert.match(edits[1].content, /No episodes failed/);
 });
 
@@ -337,6 +381,7 @@ test('continues after individual failures and reports every failed episode in th
   assert.deepEqual(calls, [1, 3, 4, 5]);
   assert.match(messages.at(-1).content, /Processed: 4.*: 2\. Failed: 2/);
   assert.match(messages.at(-1).content, /Failed episodes: 3-4/);
+  assert.match(messages.at(-1).content, /Episodes: 1,3-5,4/);
   assert.equal(logs.length, 2);
   assert.match(logs[0], /episode 3: No PDF published/);
 });
@@ -356,7 +401,7 @@ test('single-episode requests honor reload without a leading or trailing pause',
     },
     wait: () => assert.fail('Only pause between episodes'),
   });
-  assert.deepEqual(received, [show, 835, true]);
+  assert.deepEqual(received, [show, 835, true, undefined]);
 });
 
 test('a selection resolving to one episode returns its metadata and PDF with no bulk announcement', async () => {
@@ -423,7 +468,8 @@ test('long failure lists are preserved in a text report without attaching PDFs',
   });
   assert.equal(report.filename, 'failed-episodes.txt');
   assert.equal(report.contentType, 'text/plain');
-  assert.match(report.pdf.toString(), /^Failed episodes: 1,3,5/);
+  assert.match(report.pdf.toString(), /Episodes: 1-2001/);
+  assert.match(report.pdf.toString(), /Failed episodes: 1,3,5/);
   assert.ok(report.pdf.toString().endsWith('1999,2001.'));
 });
 
@@ -444,4 +490,115 @@ test('long-running jobs edit the same channel message when the interaction token
     },
   });
   assert.equal(requests, 1);
+});
+
+const overrideURL = `${base}/transcripts/${show}/transcript-mbmbam-816-pain-is-funny-leaving-the-body/`;
+
+test('URL overrides accept only Maximum Fun transcript episode pages and one requested episode', () => {
+  assert.equal(validateTranscriptURL(overrideURL), overrideURL);
+  assert.equal(validateTranscriptURL(`${base}/transcripts/unusually-named-episode/`), `${base}/transcripts/unusually-named-episode/`);
+  assert.equal(validateTranscriptURL(overrideURL + '#pdf'), overrideURL);
+  for (const invalid of [
+    '', undefined, 815, 'https://evil.example/transcripts/show/episode/',
+    'http://maximumfun.org/transcripts/show/episode/',
+    'https://maximumfun.org.evil.example/transcripts/show/episode/',
+    'https://maximumfun.org@evil.example/transcripts/show/episode/',
+    'https://user:password@maximumfun.org/transcripts/show/episode/',
+    'https://maximumfun.org/episodes/show/episode/',
+    'https://maximumfun.org/transcripts/',
+    'https://maximumfun.org/transcripts/../episodes/show/episode/',
+    'https://maximumfun.org/transcripts/%2e%2e/episodes/show/episode/',
+    'https://maximumfun.org/transcripts/show/%2e%2e%2f%2e%2e%2fepisodes/',
+    'https://maximumfun.org/transcripts/show/evil\\path/',
+    ' ' + overrideURL,
+  ]) assert.throws(() => validateTranscriptURL(invalid), /Invalid url option/, String(invalid));
+  assert.equal(validateBulkTranscriptOptions({show, episodes: '815', url: overrideURL}).count, 1);
+  assert.throws(() => validateBulkTranscriptOptions({show, episodes: '815-816', url: overrideURL}), /only be used with one episode/);
+});
+
+test('URL override bypasses all episode-number checks, refreshes cached files and records the requested episode', async t => {
+  const pages = results(815);
+  const warnings = [];
+  const replacement = Buffer.from('%PDF-1.4\nCorrected transcript');
+  const {store, calls, cacheDir} = await setup(t, pages, {
+    logger: {warn: message => warnings.push(message)},
+    extractText: async buffer => buffer.equals(pdf) ? 'Original searchable passage' : 'Corrected searchable passage',
+  });
+  await store.getTranscript(show, 815);
+  pages.set(overrideURL, page(816).replace('<a>816</a>', '<a>818</a>'));
+  pages.set(`${base}/wp-content/uploads/test.pdf`, replacement);
+  const result = await store.getTranscript(show, 815, false, overrideURL);
+  assert.deepEqual(calls.slice(3), [overrideURL, `${base}/wp-content/uploads/test.pdf`]);
+  assert.equal(result.episode, 815);
+  assert.equal(result.title, 'MBMBaM 815: A title & more');
+  assert.equal(result.sourceTitle, 'TRANSCRIPT MBMBaM 816: A title & more');
+  assert.equal(result.filename, `${show}-815.pdf`);
+  assert.equal(result.sourceUrl, overrideURL);
+  assert.deepEqual(result.pdf, replacement);
+  const directory = path.join(cacheDir, show);
+  assert.deepEqual((await readdir(directory)).sort(), ['815.json', '815.pdf', '815.txt']);
+  assert.equal(JSON.parse(await readFile(path.join(directory, '815.json'), 'utf8')).episode, 815);
+  assert.equal(await readFile(path.join(directory, '815.txt'), 'utf8'), 'Corrected searchable passage');
+  assert.match(warnings[0], /as episode 815; URL number: 816, title number: 816, from-episode-number: 818/);
+  await store.getTranscript(show, 815);
+  assert.equal(calls.length, 5);
+  await store.getTranscript(show, 815, false, overrideURL);
+  assert.equal(calls.length, 7, 'An explicit URL must fetch again without requiring reload:true');
+  assert.equal((await store.searchTranscripts({query: 'Corrected searchable passage'})).matches[0].episode, 815);
+});
+
+test('invalid URL overrides are rejected before any HTTP request or cache access', async t => {
+  const {store, calls} = await setup(t, new Map());
+  await assert.rejects(store.getTranscript(show, 815, false, 'https://evil.example/transcripts/show/episode/'), /Invalid url option/);
+  assert.equal(calls.length, 0);
+});
+
+test('page redirects cannot escape the allowed transcript prefix or Maximum Fun host', async t => {
+  for (const location of ['https://evil.example/page/', `${base}/episodes/show/episode/`]) {
+    const pages = new Map([[overrideURL, new Response('', {status: 302, headers: {location}})]]);
+    const {store, calls} = await setup(t, pages);
+    await assert.rejects(store.getTranscript(show, 815, false, overrideURL), /Unexpected transcript URL|Invalid url option/);
+    assert.deepEqual(calls, [overrideURL]);
+  }
+});
+
+test('same-site transcript redirects are followed and PDF redirects cannot leave Maximum Fun', async t => {
+  const redirected = `${base}/transcripts/${show}/redirected-transcript/`;
+  const pages = new Map([
+    [overrideURL, new Response('', {status: 301, headers: {location: redirected}})],
+    [redirected, page(815)],
+    [`${base}/wp-content/uploads/test.pdf`, pdf],
+  ]);
+  const {store, calls} = await setup(t, pages);
+  assert.equal((await store.getTranscript(show, 815, false, overrideURL)).episode, 815);
+  assert.deepEqual(calls, [overrideURL, redirected, `${base}/wp-content/uploads/test.pdf`]);
+  pages.set(`${base}/wp-content/uploads/test.pdf`, new Response('', {status: 302, headers: {location: 'https://evil.example/file.pdf'}}));
+  await assert.rejects(store.getTranscript(show, 815, false, overrideURL), /Unexpected transcript URL/);
+});
+
+test('an override page without a PDF link fails clearly and preserves the existing cached transcript', async t => {
+  const pages = results(815);
+  const {store, cacheDir} = await setup(t, pages);
+  await store.getTranscript(show, 815);
+  pages.set(overrideURL, '<h1>Missing download button</h1>');
+  await assert.rejects(store.getTranscript(show, 815, false, overrideURL), /No PDF transcript download link/);
+  assert.deepEqual((await store.getTranscript(show, 815)).pdf, pdf);
+  assert.deepEqual((await readdir(path.join(cacheDir, show))).sort(), ['815.json', '815.pdf', '815.txt']);
+});
+
+test('single-episode Discord requests pass the URL override and return the PDF attachment', async () => {
+  let received;
+  await respondWithTranscript({...bulkInteraction, data: {options: [
+    {name: 'show', value: show}, {name: 'episodes', value: '815'}, {name: 'url', value: overrideURL},
+  ]}}, {
+    store: {getTranscript: async (...args) => {
+      received = args;
+      return {title: 'MBMBaM 815: Pain Is Funny Leaving The Body', description: 'Description', pdf};
+    }},
+    edit: async (_, payload, file) => {
+      assert.equal(payload.embeds[0].title, 'MBMBaM 815: Pain Is Funny Leaving The Body');
+      assert.deepEqual(file.pdf, pdf);
+    },
+  });
+  assert.deepEqual(received, [show, 815, undefined, overrideURL]);
 });

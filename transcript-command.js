@@ -28,6 +28,12 @@ export const TRANSCRIPT_COMMAND = {
       type: 5,
       required: false,
     },
+    {
+      name: 'url',
+      description: 'Override the transcript page URL for a single episode.',
+      type: 3,
+      required: false,
+    },
   ],
 };
 
@@ -69,8 +75,32 @@ export function parseEpisodes(value) {
   };
 }
 
-export function validateBulkTranscriptOptions({ show, episodes, reload }) {
+export function validateTranscriptURL(value) {
+  const prefix = 'https://maximumfun.org/transcripts/';
+  const invalid = () => new Error(`Invalid url option. Use an episode transcript page beginning with ${prefix}`);
+  if (typeof value !== 'string' || !value.startsWith(prefix) || /[\s\\\u0000-\u001f\u007f]/u.test(value)) throw invalid();
+  let url;
+  let decodedPath;
+  try {
+    url = new URL(value);
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch {
+    throw invalid();
+  }
+  if (url.origin !== 'https://maximumfun.org' || url.username || url.password ||
+      !url.pathname.startsWith('/transcripts/') ||
+      !url.pathname.slice('/transcripts/'.length).split('/').filter(Boolean).length ||
+      decodedPath.includes('\\') || decodedPath.split('/').some(part => part === '.' || part === '..')) throw invalid();
+  url.hash = '';
+  return url.href;
+}
+
+export function validateBulkTranscriptOptions({ show, episodes, reload, url }) {
   const selection = parseEpisodes(episodes);
   validateTranscriptOptions(show, selection.ranges[0][0], reload);
+  if (url !== undefined) {
+    validateTranscriptURL(url);
+    if (selection.count !== 1) throw new Error('The url option can only be used with one episode.');
+  }
   return selection;
 }

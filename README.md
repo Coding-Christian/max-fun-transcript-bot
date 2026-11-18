@@ -22,7 +22,7 @@ range such as `11-11` or duplicate selection such as `11,11` works the same way.
 PDFs exceeding Discord's attachment limit are returned as download links.
 
 For **multiple episodes**, the bot announces that the bulk download has commenced, then edits the same
-message when complete with success/failure counts and all failed episode
+message when complete with the supplied `episodes` value, success/failure counts, and all failed episode
 numbers (consecutive failures are shown as ranges). If the failure list is too
 long for a Discord message, it is attached as a plain-text report. Transcript
 PDFs are saved locally and are not attached to bulk responses. The bot waits
@@ -38,6 +38,26 @@ Maximum Fun again and download a fresh copy, even when the episode is cached:
 `/transcript show:My Brother, My Brother and Me episodes:835-838 reload:true`.
 A successful refresh replaces the PDF, episode metadata, and searchable text.
 The previous files remain available if the search, download, or extraction fails.
+
+For an incorrectly numbered transcript page, supply the optional `url` string
+with **one requested episode**:
+
+```
+/transcript show:My Brother, My Brother and Me episodes:815 url:https://maximumfun.org/transcripts/my-brother-my-brother-and-me/transcript-mbmbam-816-pain-is-funny-leaving-the-body/
+```
+
+The bot fetches that page directly, bypassing search and all episode-number
+matching. It saves the PDF, metadata, and extracted text under the requested
+episode number (815 here), corrects the episode number in the displayed title,
+and preserves the original heading as `sourceTitle` in the metadata. Mismatched
+numbers are logged as server warnings. Providing `url` always fetches a fresh
+copy, even without `reload:true`; failed fetches or extraction preserve the
+previous cache. A URL override cannot be combined with multiple episodes.
+
+Only episode-page URLs beginning with `https://maximumfun.org/transcripts/`
+are accepted. Redirects cannot leave that transcript path or the Maximum Fun
+host; PDF downloads also cannot redirect to another host.
+
 For each episode the bot checks its local cache first, then searches Maximum Fun's transcript
 index for the requested show and episode. It follows the result's actual page
 URL, verifies the episode number, and downloads the PDF from the transcript
@@ -47,6 +67,11 @@ If the episode number in the transcript page URL agrees with its heading, that
 number takes precedence over a conflicting `from-episode-number` field. The
 bot logs a warning on the server with the conflicting values and returns the
 transcript. Pages whose URL and heading disagree are skipped.
+If the URL or heading has no episode number, the bot uses `from-episode-number`
+instead, including when that field contains plain text rather than a link.
+If numeric transcript search cannot find the page, the bot searches the show's
+episode pages and follows their transcript links, then verifies the episode
+number on the transcript page using the same rules.
 
 PDFs and episode metadata are stored in
 `transcripts/my-brother-my-brother-and-me/<episode>.pdf` and `<episode>.json`.
@@ -67,6 +92,8 @@ Example: `/list show:My Brother, My Brother and Me`
 
 `show` is required and uses the same choices as `/transcript`. The response
 lists downloaded episode numbers in ascending order with a total count.
+When more than 10 episodes are listed, consecutive numbers are abbreviated
+as ranges such as `3 - 10`. Lists of 10 or fewer episodes stay fully expanded.
 Only episodes with valid cached metadata and a nonempty PDF are included;
 text extraction is not required. Listing does not download or parse files.
 An empty library returns a message inviting you to download episodes. Lists

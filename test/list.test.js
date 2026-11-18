@@ -81,15 +81,15 @@ test('Discord response lists episode numbers and count without attaching PDFs', 
 });
 
 test('long lists are attached completely as plain text', async () => {
-  const episodes = Array.from({length: 1000}, (_, i) => ({episode: i + 1}));
+  const episodes = Array.from({length: 1000}, (_, i) => ({episode: i * 2 + 1}));
   await respondWithList(interaction, {
     store: {listTranscripts: async () => episodes},
     edit: async (_, payload, file) => {
       assert.ok(payload.content.length <= 2000);
       assert.equal(file.filename, 'downloaded-episodes.txt');
       assert.equal(file.contentType, 'text/plain');
-      assert.match(file.pdf.toString(), /1, 2, 3/);
-      assert.ok(file.pdf.toString().endsWith('999, 1000'));
+      assert.match(file.pdf.toString(), /1, 3, 5/);
+      assert.ok(file.pdf.toString().endsWith('1997, 1999'));
     },
   });
 });
