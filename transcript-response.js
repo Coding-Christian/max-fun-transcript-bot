@@ -114,32 +114,36 @@ export async function respondWithTranscript(interaction, {
       content: `Bulk transcript download has commenced for ${show}: ${selection.count} episode${selection.count === 1 ? '' : 's'}. ${options.reload ? 'Downloading fresh copies.' : 'Reusing cached transcripts where available.'} This message will be updated when complete.`,
       allowed_mentions: { parse: [] },
     });
-    let ready = 0;
-    let processed = 0;
-    const failed = [];
+    let epsReady = [];
+    let epsProcessed = [];
+    const epsFailed = [];
     for (const episode of selection) {
-      if (processed > 0) await wait(1000);
+      if (epsProcessed.length > 0) await wait(1000);
       try {
         await store.getTranscript(options.show, episode, options.reload);
-        ready++;
+        epsReady.push(episode);
       } catch (error) {
-        failed.push(episode);
+        epsFailed.push(episode);
         logger.error(`Transcript request failed for ${show}, episode ${episode}:`, error.message);
       }
-      processed++;
+      epsProcessed.push(episode);
     }
-    const counts = `Bulk transcript download complete for ${show}.\nProcessed: ${processed}. Ready (downloaded or already cached): ${ready}. Failed: ${failed.length}.`;
-    const summary = `${counts}\nEpisodes: ${options.episodes}`;
-    const failures = failed.length ? `Failed episodes: ${episodeList(failed)}.` : 'No episodes failed.';
+    const title = `Bulk transcript download complete for ${show}.`;
+    const episodes = `Episodes: ${epsProcessed.length ? episodeList(epsProcessed) : '-'} (${epsProcessed.length})`;
+    const ready = `Ready: ${epsReady.length ? episodeList(epsReady) : '-'} (${epsReady.length})`;
+    const failed = `Failed: ${epsFailed.length ? episodeList(epsFailed) : '-'} (${epsFailed.length})`;
+    const summary = `${title}\n${episodes}\n${ready}\n${failed}`;
     const payload = {
-      content: `${summary}\n${failures}`,
+      content: summary,
       embeds: [], attachments: [],
       allowed_mentions: { parse: [] },
     };
     let file;
     if (payload.content.length > 2000) {
-      payload.content = `${summary.length <= 1800 ? summary : counts}\nThe requested episodes and complete list of failed episodes are attached as a text report.`;
-      file = { filename: 'failed-episodes.txt', pdf: Buffer.from(`${summary}\n${failures}`), contentType: 'text/plain' };
+      const subtitle = 'The requested episodes and complete list of failed episodes are attached as a text report.';
+      const shortSummary = `${title}\n${subtitle}\nEpisodes: ${epsProcessed.length}\nReady: ${epsReady.length}\nFailed: ${epsFailed.length}`;
+      payload.content = summary.length <= 1800 ? summary : shortSummary;
+      file = { filename: 'failed-episodes.txt', pdf: Buffer.from(summary), contentType: 'text/plain' };
     }
     await completeTranscriptResponse(interaction, payload, originalMessage, { edit, file, fetchImpl, botToken });
   } catch (error) {
